@@ -1,22 +1,3 @@
-from flask import Flask, jsonify, Response, render_template_string, request
-from datetime import datetime, timedelta
-from collections import defaultdict, deque
-import os, re, time
-
-# ===== Config (env overridable) =====
-LOG_PATH      = os.path.expanduser(os.getenv("LOG_PATH", "~/.nexus/logs/nexus.log"))
-PORT          = int(os.getenv("PORT", "5000"))
-MAX_LINES     = int(os.getenv("MAX_LINES", "50000"))
-BUCKET_MIN    = int(os.getenv("BUCKET_MIN", "5"))
-WINDOW_HOURS  = float(os.getenv("WINDOW_HOURS", "2"))
-
-ASSIGNED_PAT   = re.compile(r"job assigned", re.IGNORECASE)
-COMPLETED_PAT  = re.compile(r"(proof completed|completed proof|job completed)", re.IGNORECASE)
-TIMESTAMP_PAT  = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
-
-app = Flask(__name__)
-
-HTML = """
 <!doctype html>
 <html>
 <head>
@@ -24,20 +5,44 @@ HTML = """
   <title>Nexus Live Jobs Dashboard</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:20px}
-    h1{margin:0 0 4px}.meta{color:#666;margin-bottom:12px}
+    :root{
+      --bg:#ffffff; --text:#0f172a; --muted:#64748b;
+      --card:#ffffff; --border:#e5e7eb; --shadow:0 1px 6px rgba(0,0,0,.05);
+      --accent:#2563eb; --ok:#15803d; --bad:#b91c1c;
+    }
+    :root[data-theme="dark"]{
+      --bg:#0b1220; --text:#e5e7eb; --muted:#94a3b8;
+      --card:#0f172a; --border:#1f2937; --shadow:0 1px 10px rgba(0,0,0,.4);
+      --accent:#60a5fa; --ok:#22c55e; --bad:#f87171;
+    }
+    html,body{height:100%}
+    body{
+      font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      margin:20px;background:var(--bg);color:var(--text);transition:background .2s,color .2s
+    }
+    h1{margin:0 0 4px}
+    .meta{color:var(--muted);margin-bottom:12px}
+    .toolbar{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px}
+    .btn{
+      border:1px solid var(--border);background:var(--card);color:var(--text);
+      border-radius:10px;padding:6px 10px;cursor:pointer;box-shadow:var(--shadow)
+    }
+    .btn:hover{filter:brightness(1.05)}
     .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-    .card{border:1px solid #e5e7eb;border-radius:12px;padding:12px;box-shadow:0 1px 6px rgba(0,0,0,.05)}
+    .card{border:1px solid var(--border);border-radius:12px;padding:12px;box-shadow:var(--shadow);background:var(--card)}
     .num{font-size:28px;font-weight:700}
     canvas{width:100%;height:320px}
-    code{background:#f1f5f9;padding:2px 6px;border-radius:6px}
-    .ok{color:#15803d}.bad{color:#b91c1c}
+    code{background:rgba(148,163,184,.15);padding:2px 6px;border-radius:6px}
+    .ok{color:var(--ok)} .bad{color:var(--bad)}
   </style>
 </head>
 <body>
-  <h1>Nexus Live Jobs</h1>
-  <div class="meta">
-    Auto-refresh every <code id="rf">10s</code> · Source: <code id="lp"></code>
+  <div class="toolbar">
+    <div>
+      <h1 style="margin:0">Nexus Live Jobs</h1>
+      <div class="meta">Auto-refresh every <code id="rf">10s</code> · Source: <code id="lp"></code></div>
+    </div>
+    <button id="themeBtn" class="btn" type="button">🌓 Toggle Theme</button>
   </div>
 
   <div class="grid" style="margin:12px 0">
@@ -50,7 +55,7 @@ HTML = """
   <div class="card">
     <div><strong>Jobs per {{bucket}} minutes (last {{window}}h)</strong></div>
     <canvas id="chart"></canvas>
-    <div style="color:#64748b;font-size:12px;margin-top:6px">Blue=assigned · Green=completed</div>
+    <div class="meta">Blue=assigned · Green=completed</div>
   </div>
 
   <div class="card" style="margin-top:12px">
@@ -60,6 +65,23 @@ HTML = """
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
+    (function initTheme(){
+      const saved = localStorage.getItem('theme');
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const theme = saved || (prefersDark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+
+    document.addEventListener('DOMContentLoaded', ()=>{
+      const btn = document.getElementById('themeBtn');
+      btn.addEventListener('click', ()=>{
+        const cur = document.documentElement.getAttribute('data-theme') || 'light';
+        const next = cur === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('theme', next);
+      });
+    });
+
     let chart;
 
     async function loadConfig() {
@@ -116,118 +138,3 @@ HTML = """
   </script>
 </body>
 </html>
-"""
-
-def parse_log(max_lines=MAX_LINES):
-    if not os.path.exists(LOG_PATH):
-        return []
-    lines = deque(maxlen=max_lines)
-    with open(LOG_PATH, "r", errors="ignore") as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if line:
-                lines.append(line)
-    events = []
-    for line in lines:
-        m = TIMESTAMP_PAT.match(line)
-        if not m:
-            continue
-        try:
-            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            continue
-        if ASSIGNED_PAT.search(line):
-            events.append(("assigned", ts))
-        elif COMPLETED_PAT.search(line):
-            events.append(("completed", ts))
-    return events
-
-def roundN(dt: datetime, minutes: int):
-    m = (dt.minute // minutes) * minutes
-    return dt.replace(second=0, microsecond=0, minute=m)
-
-@app.route("/")
-def index():
-    return render_template_string(HTML, bucket=BUCKET_MIN, window=WINDOW_HOURS)
-
-@app.route("/stats")
-def stats():
-    now = datetime.now()
-    events = parse_log()
-
-    a1  = sum(1 for t,ts in events if t=="assigned"  and ts >= now - timedelta(hours=1))
-    c1  = sum(1 for t,ts in events if t=="completed" and ts >= now - timedelta(hours=1))
-    a24 = sum(1 for t,ts in events if t=="assigned"  and ts >= now - timedelta(hours=24))
-    c24 = sum(1 for t,ts in events if t=="completed" and ts >= now - timedelta(hours=24))
-
-    start = now - timedelta(hours=WINDOW_HOURS)
-    bucket_a = defaultdict(int); bucket_c = defaultdict(int)
-    for t, ts in events:
-        if ts < start: continue
-        k = roundN(ts, BUCKET_MIN)
-        (bucket_a if t=="assigned" else bucket_c)[k] += 1
-
-    labels, A, C = [], [], []
-    cur = roundN(start, BUCKET_MIN); end = roundN(now, BUCKET_MIN)
-    while cur <= end:
-        labels.append(cur.strftime("%H:%M"))
-        A.append(bucket_a.get(cur, 0)); C.append(bucket_c.get(cur, 0))
-        cur += timedelta(minutes=BUCKET_MIN)
-
-    return jsonify({
-        "totals": {"assigned_1h":a1,"completed_1h":c1,"assigned_24h":a24,"completed_24h":c24},
-        "series": {"labels":labels,"assigned":A,"completed":C}
-    })
-
-@app.route("/recent")
-def recent():
-    limit = int(request.args.get("limit", 100))
-    events = parse_log()
-    items = [{"type":t, "ts": ts.isoformat()} for t,ts in events[-limit:]]
-    return jsonify({"count": len(items), "items": items})
-
-@app.route("/events")
-def sse_events():
-    def gen():
-        path = LOG_PATH; pos = 0
-        if os.path.exists(path):
-            try: pos = os.path.getsize(path)
-            except Exception: pos = 0
-        while True:
-            try:
-                if os.path.exists(path):
-                    with open(path, "r", errors="ignore") as f:
-                        f.seek(pos); chunk = f.read(); pos = f.tell()
-                        if chunk:
-                            for line in chunk.splitlines():
-                                m = TIMESTAMP_PAT.match(line)
-                                if not m: continue
-                                ts = m.group(1)
-                                typ = "assigned" if ASSIGNED_PAT.search(line) else ("completed" if COMPLETED_PAT.search(line) else None)
-                                if typ:
-                                    yield "data: " + '{"ts":"%s","type":"%s"}\n\n' % (ts, typ)
-                yield "data: {}\n\n"; time.sleep(1)
-            except GeneratorExit:
-                break
-            except Exception:
-                time.sleep(1)
-    return Response(gen(), mimetype="text/event-stream")
-
-@app.route("/health")
-def health():
-    exists = os.path.exists(LOG_PATH)
-    size = os.path.getsize(LOG_PATH) if exists else 0
-    mtime = datetime.fromtimestamp(os.path.getmtime(LOG_PATH)).isoformat() if exists else None
-    events = parse_log()
-    now = datetime.now()
-    in_window = sum(1 for _,ts in events if ts >= now - timedelta(hours=WINDOW_HOURS))
-    return jsonify({"ok": exists and size>0, "log_path": LOG_PATH, "exists": exists,
-                    "size_bytes": size, "mtime": mtime, "events_in_window": in_window})
-
-@app.route("/config")
-def config():
-    return jsonify({"LOG_PATH": LOG_PATH, "PORT": PORT, "MAX_LINES": MAX_LINES,
-                    "BUCKET_MIN": BUCKET_MIN, "WINDOW_HOURS": WINDOW_HOURS})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, debug=False)
