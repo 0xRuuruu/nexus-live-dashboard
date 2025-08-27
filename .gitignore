@@ -1,3 +1,5 @@
+# Allow sample logs
+!sample/*.log
 __pycache__/
 *.pyc
 .env
