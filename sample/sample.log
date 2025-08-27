@@ -1,0 +1,4 @@
+[2025-08-27 10:00:00] Job assigned: id=abc
+[2025-08-27 10:01:20] Proof completed: id=abc
+[2025-08-27 10:05:05] Job assigned: id=def
+[2025-08-27 10:07:45] Proof completed: id=def
