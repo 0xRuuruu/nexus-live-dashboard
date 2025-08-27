@@ -6,3 +6,6 @@ __pycache__/
 *.log
 logs/
 .DS_Store
+
+# allow sample logs (must be after *.log)
+!sample/*.log
