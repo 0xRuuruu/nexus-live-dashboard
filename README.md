@@ -18,3 +18,6 @@ Use `tee -a ~/.nexus/logs/nexus.log` to store logs while running `nexus-network`
 LOG_PATH=$PWD/sample/sample.log ./run.sh
 Open http://localhost:5000
  and you should see the dashboard update with the sample data.
+
+### ENV Variables
+Supports `LOG_PATH`, `PORT`, and `WINDOW_HOURS` for customization.
